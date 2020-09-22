@@ -1,0 +1,7 @@
+node_modules
+testdata/*/
+!testdata/run-predefined
+yarn-error.log
+yarn.lock
+package-lock.json
+.env

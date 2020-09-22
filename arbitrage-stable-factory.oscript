@@ -1,0 +1,101 @@
+{
+	doc_url: "https://ostable.org/stablecoin-interest-arbitrage-factory.json",
+	init: `{
+		$arbitrage_base_aa = 'WURQLCAXAX3WCVCFYJ3A2PQU4ZB3ALG7';
+	}`,
+	messages: {
+		cases: [
+
+			// accept a callback from a newly created arbitrage AA to record its newly defined shares asset
+			{
+				if: `{var['creating']}`,
+				messages: [
+					{
+						app: 'state',
+						state: `{
+							$params = var['arb_' || trigger.address];
+							$params.shares_asset = trigger.unit;
+							var['arb_' || trigger.address] = $params;
+							var['creating'] = false;
+						}`
+					}
+				]
+			},
+
+			// create a new arbitrage AA
+			{
+				init: `{
+					if (!is_aa(trigger.data.oswap_aa))
+						bounce("oswap_aa must be an AA");
+					if (!is_aa(trigger.data.deposit_aa))
+						bounce("deposit_aa must be an AA");
+					if (!is_valid_address(trigger.data.manager))
+						bounce("manager must be valid address");
+					if (typeof(trigger.data.management_fee) != 'number' OR trigger.data.management_fee < 0 OR trigger.data.management_fee >= 1)
+						bounce("bad management_fee");
+					if (typeof(trigger.data.success_fee) != 'number' OR trigger.data.success_fee < 0 OR trigger.data.success_fee >= 1)
+						bounce("bad success_fee");
+					$curve_aa = definition[trigger.data.deposit_aa][1].params.curve_aa;
+					$interest_asset = var[$curve_aa]['asset2'];
+					$stable_asset = var[trigger.data.deposit_aa]['asset'];
+					$oswap_params = definition[trigger.data.oswap_aa][1].params;
+					if (!($oswap_params.asset0 == $interest_asset AND $oswap_params.asset1 == $stable_asset OR $oswap_params.asset1 == $interest_asset AND $oswap_params.asset0 == $stable_asset))
+						bounce("oswap assets don't match the interest and stable tokens");
+					
+					$params = {
+						oswap_aa: trigger.data.oswap_aa,
+						deposit_aa: trigger.data.deposit_aa,
+						manager: trigger.data.manager,
+						management_fee: trigger.data.management_fee,
+						success_fee: trigger.data.success_fee,
+					};
+
+					$arbitrage_aa = [
+						'autonomous agent',
+						{
+							base_aa: $arbitrage_base_aa,
+							params: $params
+						}
+					];
+					$arbitrage_aa_address = chash160($arbitrage_aa);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{ address: "{ $arbitrage_aa_address }", amount: 4000 }, // I'll get all this money back (minus fees)
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							define: 1,
+							factory: `{this_address}`
+						}
+					},
+					{
+						app: 'definition',
+						payload: {
+							definition: `{$arbitrage_aa}`
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							$params.interest_asset = $interest_asset;
+							$params.stable_asset = $stable_asset;
+							$params.curve_aa = $curve_aa;
+							var['arb_' || $arbitrage_aa_address] = $params;
+							var['creating'] = 1;
+							response['address'] = $arbitrage_aa_address;
+						}`
+					}
+				]
+
+			}
+		]
+	}
+}

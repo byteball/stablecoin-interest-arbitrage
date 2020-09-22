@@ -1,0 +1,560 @@
+{
+	doc_url: "https://ostable.org/stablecoin-interest-arbitrage.json",
+	getters: `{
+		$get_deposit_aa = () => params.deposit_aa;
+		$get_curve_aa = () => definition[params.deposit_aa][1].params.curve_aa;
+		$get_oswap_aa = () => params.oswap_aa;
+		$get_manager = () => params.manager;
+		$get_management_fee = () => params.management_fee;
+		$get_success_fee = () => params.success_fee;
+		$get_oswap_fee = () => definition[params.oswap_aa][1].params.swap_fee / 1e11;
+
+		$get_oswap_output = ($in_amount, $in_asset, $out_asset) => {
+			$fee = $get_oswap_fee();
+			$net_in_amount = $in_amount * (1 - $fee);
+			$in_balance = balance[params.oswap_aa][$in_asset];
+			$out_balance = balance[params.oswap_aa][$out_asset];
+			$out_amount = $out_balance * $net_in_amount / ($in_balance + $net_in_amount);
+			floor($out_amount)
+		};
+
+		// how much input asset do I need to send in order to get the desired amount of the output asset
+		$get_oswap_input = ($out_amount, $in_asset, $out_asset) => {
+			$fee = $get_oswap_fee();
+			$in_balance = balance[params.oswap_aa][$in_asset];
+			$out_balance = balance[params.oswap_aa][$out_asset];
+			if ($out_amount >= $out_balance)
+				bounce("not enough out asset in the pool");
+			$net_in_amount = $in_balance * $out_amount / ($out_balance - $out_amount);
+			$in_amount = $net_in_amount / (1 - $fee);
+			ceil($in_amount)
+		};
+
+	}`,
+	init: `{
+		$trigger_reward = 20000;
+		$bank_aa = 'GV5YXIIRH3DH5FTEECW7IS2EQTAYJJ6S';
+		$deposit_aa = params.deposit_aa;
+		$curve_aa = $get_curve_aa();
+
+		// tokens
+		$stable_asset = var[$deposit_aa]['asset'];
+		$interest_asset = var[$curve_aa]['asset2'];
+		$shares_asset = var['shares_asset'];
+
+		$interest_rate = var[$curve_aa]['interest_rate'];
+		$term = (timestamp - var[$curve_aa]['rate_update_ts']) / (360 * 24 * 3600); // in years
+		$growth_factor = var[$curve_aa]['growth_factor'] * (1 + $interest_rate)^$term;
+
+		$status = var['status'];
+
+		// it might be slightly larger than real if some force-close requests are already finished but not subtracted from balance_in_challenging_period yet
+		$get_interest_balance = () => balance[$interest_asset] + var[$bank_aa]['balance_' || this_address || '_' || $interest_asset] + var['balance_in_challenging_period'];
+
+		// can be negative if the trade is not profitable, e.g. when oswap fee eats all the price difference
+		$get_optimal_deposit_amount = () => {
+			$target_price = $growth_factor;
+			$fee = $get_oswap_fee();
+			$interest_balance = balance[params.oswap_aa][$interest_asset];
+			$stable_balance = balance[params.oswap_aa][$stable_asset];
+			$net_share = 1 - $fee;
+			$deposit_amount = (sqrt($interest_balance * $stable_balance * $net_share * $target_price) - $stable_balance) / ($net_share * $target_price);
+			floor($deposit_amount)
+		};
+
+	}`,
+	messages: {
+		cases: [
+
+			// define the shares asset
+			{
+				if: `{ trigger.data.define AND !$shares_asset }`,
+				messages: [
+					{
+						app: 'asset',
+						payload: {
+							// without cap
+							is_private: false,
+							is_transferrable: true,
+							auto_destroy: false,
+							fixed_denominations: false,
+							issued_by_definer_only: true,
+							cosigned_by_definer: false,
+							spender_attested: false,
+						}
+					},
+					{ // call back to the factory to let it know our shares asset
+						if: `{trigger.data.factory}`,
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: '{trigger.data.factory}', amount: 1000}, // send all
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['last_mf_withdrawal_ts'] = timestamp;
+							var['last_sf_withdrawal_share_price'] = 1;
+							var['shares_asset'] = response_unit;
+							response['shares_asset'] = response_unit;
+						}`
+					}
+				]
+			},
+
+			// above the peg: open a deposit in interest token, take a stable token in exchange, and exchange it back to interest token via oswap.
+			{
+				if: `{ trigger.data.open_deposit }`,
+				init: `{
+					$deposit_amount = min($get_optimal_deposit_amount(), balance[$interest_asset]);
+					if ($deposit_amount <= 0)
+						bounce("would lose money");
+
+					// double-check that we are not losing money
+					$stable_amount = floor($deposit_amount * $growth_factor);
+					$out_amount = $get_oswap_output($stable_amount, $stable_asset, $interest_asset);
+					$profit = $out_amount - $deposit_amount;
+					if ($profit <= 0)
+						bounce("unexpected: would lose money");
+					
+					// reward non-managers for successfully triggering arb
+					if (trigger.address != params.manager AND balance[base] - storage_size > 2 * $trigger_reward)
+						$reward = $trigger_reward;
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$interest_asset}`,
+							outputs: [
+								{address: "{$deposit_aa}", amount: "{ $deposit_amount }"}
+							]
+						}
+					},
+					{
+						if: '{$reward}',
+						app: 'payment',
+						payload: {
+							asset: `base`,
+							outputs: [
+								{address: "{trigger.address}", amount: "{ $reward }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['status'] = 'opening_deposit';
+							var['expected_stable_amount'] = $stable_amount;
+							var['expected_interest_amount'] = $out_amount;
+							response['expected_profit'] = $profit;
+						}`
+					}
+				]
+			},
+
+			// receive stable token from deposit AA and forward it to oswap for exchange
+			{
+				if: `{ trigger.address == $deposit_aa AND trigger.output[[asset=$stable_asset]] > 0 AND $status AND $status == 'opening_deposit' }`,
+				init: `{
+					$received_stable_amount = trigger.output[[asset=$stable_asset]];
+					$expected_stable_amount = var['expected_stable_amount'];
+					if ($received_stable_amount != $expected_stable_amount)
+						bounce("wrong stable amount received from deposit AA: expected " || $expected_stable_amount || ", got " || $received_stable_amount);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$stable_asset}`,
+							outputs: [
+								{address: "{params.oswap_aa}", amount: "{ $received_stable_amount }"}
+							]
+						}
+					},
+					{
+						app: 'payment',
+						payload: {
+							asset: `base`,
+							outputs: [
+								{address: "{params.oswap_aa}", amount: 1000}
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							to: `{this_address}`
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['status'] = 'swapping_s2i';
+						}`
+					}
+				]
+			},
+
+			// receive interest token from oswap AA and finish
+			{
+				if: `{ trigger.address == params.oswap_aa AND trigger.output[[asset=$interest_asset]] > 0 AND $status AND $status == 'swapping_s2i' }`,
+				init: `{
+					$received_interest_amount = trigger.output[[asset=$interest_asset]];
+					$expected_interest_amount = var['expected_interest_amount'];
+					if ($received_interest_amount != $expected_interest_amount)
+						bounce("wrong interest amount received from oswap AA: expected " || $expected_interest_amount || ", got " || $received_interest_amount);
+				}`,
+				messages: [
+					{
+						app: 'state',
+						state: `{
+							var['expected_stable_amount'] = false;
+							var['expected_interest_amount'] = false;
+							var['status'] = false;
+						}`
+					}
+				]
+			},
+
+			// below the peg: exchange interest token for stable token through oswap and close the least protected or our own deposit
+			// only the manager is allowed to send such a request
+			{
+				if: `{ trigger.data.close_deposit AND trigger.data.id }`,
+				init: `{
+					if (trigger.address != params.manager)
+						bounce("you are not the manager");
+					$deposit = var[$deposit_aa]['deposit_' || trigger.data.id];
+					if (!$deposit)
+						bounce("no such deposit");
+					$stable_amount = ($deposit.owner == this_address) ? $deposit.stable_amount : floor($deposit.amount * $growth_factor);
+					$in_amount = $get_oswap_input($stable_amount, $interest_asset, $stable_asset);
+					$profit = $deposit.amount - $in_amount;
+					if ($profit <= 0)
+						bounce("would lose money");
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$interest_asset}`,
+							outputs: [
+								{address: "{params.oswap_aa}", amount: "{ $in_amount }"}
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							to: `{this_address}`
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['status'] = 'swapping_i2s';
+							var['expected_stable_amount'] = $stable_amount;
+							var['id'] = trigger.data.id;
+							if ($deposit.owner != this_address){
+								var['amount_' || trigger.data.id] = $deposit.amount;
+								var['balance_in_challenging_period'] += $deposit.amount;
+								response['expected_profit'] = $profit;
+							}
+						}`
+					}
+				]
+			},
+
+			// receive stable token from oswap AA and send it to deposit AA to close the deposit
+			{
+				if: `{ trigger.address == params.oswap_aa AND trigger.output[[asset=$stable_asset]] > 0 AND $status AND $status == 'swapping_i2s' }`,
+				init: `{
+					$received_stable_amount = trigger.output[[asset=$stable_asset]];
+					$expected_stable_amount = var['expected_stable_amount'];
+					if ($received_stable_amount < $expected_stable_amount)
+						bounce("wrong stable amount received from oswap AA: expected " || $expected_stable_amount || ", got " || $received_stable_amount);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$stable_asset}`,
+							outputs: [
+								{address: "{$deposit_aa}", amount: "{ $expected_stable_amount }"}
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							id: `{var['id']}`
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['expected_stable_amount'] = false;
+							var['id'] = false;
+							var['status'] = false;
+						}`
+					}
+				]
+			},
+
+			// receive interest token from deposit AA as a result of closing our own deposit, or from oswap as a result of exchanging stable token, or from bank AA as a result of withdrawing funds accrued from closing deposits
+			{
+				if: `{ (trigger.address == $deposit_aa OR trigger.address == params.oswap_aa OR trigger.address == $bank_aa) AND trigger.output[[asset=$interest_asset]] > 0 AND !$status }`,
+				messages: [
+					{
+						app: 'state',
+						state: `{
+							// do nothing, it gets added to our balance
+						}`
+					}
+				]
+			},
+
+			// 1. receive stable token from bank AA as a result of our force-close attempt being challenged
+			// 2. receive stable token here if somebedy else closes our deposit and we receive interest
+			// 3. manually trigger selling of the stable tokens accumulated through rounding errors
+			{
+				if: `{ (trigger.data.sell_stable OR (trigger.address == $deposit_aa OR trigger.address == $bank_aa) AND trigger.output[[asset=$stable_asset]] > 0) AND !$status }`,
+				messages: [
+					{ // send all to oswap to exchange to the interest token. We don't want to hold the stable token
+						app: 'payment',
+						payload: {
+							asset: `{$stable_asset}`,
+							outputs: [
+								{address: "{params.oswap_aa}"} // send all
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							to: `{this_address}`
+						}
+					},
+				]
+			},
+
+			// after our force-close request is resolved in any way, forget it and subtract from balance_in_challenging_period.
+			// Anyone can call this dendrite
+			{
+				if: `{ trigger.data.unlock AND trigger.data.id }`,
+				init: `{
+					$id = trigger.data.id;
+					$amount = var['amount_' || $id];
+					if (!$amount)
+						bounce("we have no funds locked in closure of this deposit");
+					if (var[$deposit_aa]['deposit_' || $id || '_force_close'])
+						bounce("this deposit is still in challenging period");
+				}`,
+				messages: [
+					{
+						app: 'state',
+						state: `{
+							var['amount_' || $id] = false;
+							var['balance_in_challenging_period'] -= $amount;
+						}`
+					}
+				]
+			},
+
+			// challenge a force-close and try to earn a reward. We can also challenge our own mistaken force-close request and try to avoid losses
+			{
+				if: `{ trigger.data.challenge_force_close AND trigger.data.id AND trigger.data.weaker_id AND trigger.output[[asset=base]] >= 3000 }`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{$deposit_aa}", amount: 2000}
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: '{trigger.data}'
+					},
+				]
+			},
+
+			// withdraw from bank.
+			// Anyone can call this dendrite
+			{
+				if: `{ trigger.data.withdraw_from_bank AND trigger.data.asset AND (trigger.data.asset == $interest_asset OR trigger.data.asset == $stable_asset) }`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{$bank_aa}", amount: 2000} // withdrawal fee
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							withdraw: 1,
+							asset: `{trigger.data.asset}`,
+							amount: `all`,
+						}
+					},
+				]
+			},
+
+			// buy shares from the AA
+			{
+				if: `{ $shares_asset AND trigger.output[[asset=$interest_asset]] > 0 }`,
+				init: `{
+					$received_interest_amount = trigger.output[[asset=$interest_asset]];
+					$shares_supply = var['shares_supply'] OTHERWISE 0;
+					$interest_balance = $get_interest_balance() - $received_interest_amount;
+					if ($interest_balance < 0)
+						bounce("interest_balance < 0");
+					if ($shares_supply > 0 AND $interest_balance == 0)
+						bounce("shares_supply > 0 AND interest_balance == 0");
+					$share_price = $shares_supply ? $interest_balance / $shares_supply : 1;
+					$shares_amount = floor($received_interest_amount / $share_price);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: '{$shares_asset}',
+							outputs: [
+								{address: "{trigger.address}", amount: "{$shares_amount}"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['shares_supply'] += $shares_amount;
+						}`
+					}
+				]
+			},
+
+			// redeem shares
+			{
+				if: `{ $shares_asset AND trigger.output[[asset=$shares_asset]] > 0 }`,
+				init: `{
+					$received_shares_amount = trigger.output[[asset=$shares_asset]];
+					$shares_supply = var['shares_supply'];
+					$interest_balance = $get_interest_balance();
+					if ($interest_balance < 0)
+						bounce("interest_balance < 0");
+					if ($shares_supply > 0 AND $interest_balance == 0)
+						bounce("shares_supply > 0 AND interest_balance == 0");
+					$share_price = $interest_balance / $shares_supply;
+					$interest_amount = floor($received_shares_amount * $share_price);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: '{$interest_asset}',
+							outputs: [
+								{address: "{trigger.address}", amount: "{$interest_amount}"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['shares_supply'] -= $received_shares_amount;
+						}`
+					}
+				]
+			},
+
+			// withdraw the management fee accrued since the previous withdrawal.
+			// We print new shares and send them to the manager
+			{
+				if: `{ $shares_asset AND trigger.data.withdraw_management_fee AND trigger.address == params.manager }`,
+				init: `{
+					$shares_supply = var['shares_supply'] OTHERWISE 0;
+					$mf_term = (timestamp - var['last_mf_withdrawal_ts']) / (360 * 24 * 3600); // in years
+					$mf_growth_factor = (1 + params.management_fee)^$term;
+					$mf = floor($shares_supply * ($mf_growth_factor - 1));
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: '{$shares_asset}',
+							outputs: [
+								{address: "{trigger.address}", amount: "{$mf}"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['shares_supply'] += $mf;
+							var['last_mf_withdrawal_ts'] = timestamp;
+						}`
+					}
+				]
+			},
+
+			// withdraw the success fee accrued since the previous withdrawal
+			// We pay in interest asset from the pool
+			{
+				if: `{ $shares_asset AND trigger.data.withdraw_success_fee AND trigger.address == params.manager }`,
+				init: `{
+					$shares_supply = var['shares_supply'];
+					if (!$shares_supply)
+						bounce("no shares yet");
+					$interest_balance = $get_interest_balance();
+					$share_price = $interest_balance / $shares_supply;
+					$profit = ($share_price - var['last_sf_withdrawal_share_price']) * $shares_supply;
+					$sf = floor($profit * params.success_fee);
+					if ($sf <= 0)
+						bounce("there is no profit since the last withdrawal");
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: '{$interest_asset}',
+							outputs: [
+								{address: "{trigger.address}", amount: "{$sf}"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['last_sf_withdrawal_share_price'] = $share_price;
+						}`
+					}
+				]
+			},
+
+			// withdraw bytes accumulated through bounce fees
+			{
+				if: `{ $shares_asset AND trigger.data.withdraw_bytes AND trigger.data.amount AND trigger.address == params.manager }`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{trigger.address}", amount: "{trigger.data.amount}"}
+							]
+						}
+					},
+				]
+			},
+
+		]
+	}
+}
