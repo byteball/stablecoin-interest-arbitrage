@@ -69,7 +69,7 @@ class DepositAA {
 			deposits.push(deposit);
 		}
 		deposits.sort((d1, d2) => d1.protectionRatio - d2.protectionRatio);
-		console.log(`deposits sorted from the weakest: ${JSON.stringify(deposits, null, '\t')}`);
+		console.log(`deposits sorted from the weakest: ${JSON.stringify(deposits, null, 2)}`);
 		return deposits;
 	}
 
@@ -100,6 +100,7 @@ class DepositAA {
 				continue;
 			let id = var_name.substr('deposit_'.length, 44);
 			let force_close = depositVars[var_name];
+			console.log(`checking force-close var_name=${var_name}, id=${id}: ${JSON.stringify(force_close, null, 2)}`);
 			let weaker_id = getWeakerId(force_close);
 			if (weaker_id) {
 				console.log(`deposit ${weaker_id} appears to be weaker than force-closed deposit ${id}`)
