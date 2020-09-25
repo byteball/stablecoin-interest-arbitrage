@@ -96,6 +96,8 @@ class DepositAA {
 		const depositVars = aa_state.getUpcomingAAStateVars(this.#deposit_aa);
 		let challenges = [];
 		for (let var_name in depositVars) {
+			if (!depositVars[var_name]) // might be set to false if the variable was only accessed but never assigned
+				continue;
 			if (!var_name.startsWith('deposit_') || !var_name.endsWith('_force_close'))
 				continue;
 			let id = var_name.substr('deposit_'.length, 44);
