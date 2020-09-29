@@ -215,7 +215,11 @@ class Arb {
 		for (let var_name in arbVars) {
 			if (!var_name.startsWith('amount_'))
 				continue;
+			let amount = arbVars[var_name];
+			if (!amount) // deleted var set to false
+				continue;
 			let id = var_name.substr('amount_'.length, 44);
+			console.log(`arb ${this.#arb_aa}: will unlock ${amount} from force-closing deposit ${id}`);
 			ids.push(id);
 		}
 		console.log(`arb ${this.#arb_aa}: force-closes to unlock: `, ids);
