@@ -32,7 +32,12 @@ Use your Obyte wallet to send a transaction to the factory AA **5WPGSR5KPKLLRWU7
 
 The factory will create a new arbitrage AA, this is the AA that will store the funds of investors. The bot will issue `arb` commands to this AA when it sees an arbitrage opportunity.
 
-Specify this arbitrage AA as `arb_aa` in your conf.json.
+Add this arbitrage AA to the `arb_aas` array in your conf.json. A single bot can manage several arb AAs:
+```json
+{
+        "arb_aas": ["BCMFNDHNQDEECEWAKUXYIHFE6GXAJ2F6"]
+}
+```
 
 ### Running the arbitrage bot
 

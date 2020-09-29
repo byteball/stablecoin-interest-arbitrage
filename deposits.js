@@ -43,7 +43,9 @@ class DepositAA {
 		return new DepositAA(deposit_aa, stable_asset, interest_rate, rate_update_ts, growth_factor, deposit_params);
 	}
 
-
+	getAA() {
+		return this.#deposit_aa;
+	}
 
 	getTargetPrice() {
 		const term = (Math.round(Date.now() / 1000) - this.#rate_update_ts) / (360 * 24 * 3600); // in years

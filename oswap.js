@@ -36,6 +36,9 @@ class OswapAA {
 		return new OswapAA(oswap_aa, interest_asset, stable_asset, fee);
 	}
 
+	getAA() {
+		return this.#oswap_aa;
+	}
 
 	getOutAsset(in_asset) {
 		return in_asset === this.#interest_asset ? this.#stable_asset : this.#interest_asset;
