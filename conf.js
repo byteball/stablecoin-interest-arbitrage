@@ -33,7 +33,7 @@ exports.explicitStart = true;
 
 exports.arb_aas = []; // edit in conf.json
 
-
+exports.bank_aa = 'GV5YXIIRH3DH5FTEECW7IS2EQTAYJJ6S';
 
 
 console.log('finished arb conf');

@@ -43,6 +43,9 @@ class Arb {
 		setInterval(() => this.unlockForceCloses(), 24 * 3600 * 1000);
 		this.unlockForceCloses();
 	
+		setInterval(() => this.withdrawFromBankAA(), 24 * 3600 * 1000);
+		this.withdrawFromBankAA();
+	
 		this.checkPricesAndArb();
 	}
 
@@ -232,6 +235,21 @@ class Arb {
 		}
 		console.log(`arb ${this.#arb_aa}: done unlocking force-closes`);
 		unlock();
+	}
+
+	async withdrawFromBankAA() {
+		const prefix = 'balance_' + this.#arb_aa + '_';
+		const balances = await dag.readAAStateVars(conf.bank_aa, prefix);
+		console.log(`arb ${this.#arb_aa}: bank balances`, balances);
+		for (let asset of [this.#interest_asset, this.#stable_asset]) {
+			if (balances[prefix + asset]) {
+				let unit = await dag.sendAARequest(conf.bank_aa, {
+					withdraw: 1,
+					recipients: [{ address: this.#arb_aa, asset, amount: balances[prefix + asset] }],
+				});
+				console.log(`arb ${this.#arb_aa}: requested withdrawal from bank of ${asset}: ${unit}`);
+			}
+		}
 	}
 
 	onArbAAResponse(objAAResponse) {
