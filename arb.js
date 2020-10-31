@@ -243,9 +243,9 @@ class Arb {
 		console.log(`arb ${this.#arb_aa}: bank balances`, balances);
 		for (let asset of [this.#interest_asset, this.#stable_asset]) {
 			if (balances[prefix + asset]) {
-				let unit = await dag.sendAARequest(conf.bank_aa, {
-					withdraw: 1,
-					recipients: [{ address: this.#arb_aa, asset, amount: balances[prefix + asset] }],
+				let unit = await dag.sendAARequest(this.#arb_aa, {
+					withdraw_from_bank: 1,
+					asset,
 				});
 				console.log(`arb ${this.#arb_aa}: requested withdrawal from bank of ${asset}: ${unit}`);
 			}
