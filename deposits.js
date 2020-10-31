@@ -1,8 +1,5 @@
 "use strict";
 
-const _ = require('lodash');
-const conf = require('ocore/conf.js');
-const walletGeneral = require('ocore/wallet_general.js');
 const dag = require('aabot/dag.js');
 const aa_state = require('aabot/aa_state.js');
 
@@ -124,8 +121,8 @@ class DepositAA {
 				continue;
 			let id = var_name.substr('deposit_'.length, 44);
 			let force_close = depositVars[var_name];
-			if (force_close.closer !== conf.arb_aa) // not ours
-				continue;
+		//	if (force_close.closer !== conf.arb_aa) // not ours
+		//		continue;
 			if (force_close.ts + this.#deposit_params.challenging_period >= Math.round(Date.now() / 1000)) // not expired yet
 				continue;
 			ids.push(id);

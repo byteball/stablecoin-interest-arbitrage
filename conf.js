@@ -31,7 +31,7 @@ exports.bNoPassphrase = true;
 
 exports.explicitStart = true;
 
-exports.arb_aa = ''; // edit in conf.json
+exports.arb_aas = []; // edit in conf.json
 
 
 
