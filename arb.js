@@ -73,7 +73,7 @@ class Arb {
 		let max_allowed_protection_ratio;
 		for (let i = 0; i < deposits.length; i++){
 			let d = deposits[i];
-			if (max_allowed_protection_ratio && d.protectionRatio > max_allowed_protection_ratio)
+			if (max_allowed_protection_ratio !== undefined && d.protectionRatio > max_allowed_protection_ratio)
 				break;
 			let stable_amount = (d.owner === this.#arb_aa) ? d.stable_amount : Math.floor(d.amount * this.#depositAA.getTargetPrice());
 			if (stable_amount <= total_stable_amount) {
