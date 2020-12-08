@@ -61,6 +61,7 @@ class Arb {
 	
 		const oswapAA = await OswapAA.create(oswap_aa, interest_asset, stable_asset);
 		const depositAA = await DepositAA.create(deposit_aa);
+		await aa_state.followAA(arb_aa);
 	
 		return new Arb(arb_aa, interest_asset, stable_asset, oswapAA, depositAA);
 	}
