@@ -29,7 +29,6 @@
     "eslint-plugin-standard": "^4.0.1"
   },
   "resolutions": {
-    "level-rocksdb": "^4.0.0",
     "chalk": "^3.0.0",
     "cli-width": "^2.2.1"
   }
